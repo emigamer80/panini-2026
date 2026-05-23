@@ -1951,7 +1951,18 @@ window.loadSalesHistory = async function() {
     panel.innerHTML = sales.map(s => {
       const date  = s.date || new Date(s.ts).toLocaleDateString('es-MX');
       const time  = new Date(s.ts).toLocaleTimeString('es-MX', {hour:'2-digit',minute:'2-digit'});
-      const items = (s.items||[]).map(i => `<span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 6px;background:rgba(255,255,255,0.05);border-radius:3px;">${isHoloAdmin(i.code)?'✨ ':''}${i.code}</span>`).join(' ');
+      // Group historial items in order
+      const orderedItems = groupCodesOrdered((s.items||[]).map(i=>i.code));
+      let items = '';
+      for (const sec of orderedItems) {
+        const holoNums = sec.items.filter(x=>isHoloAdmin(x.code)).map(x=>x.num);
+        const normNums = sec.items.filter(x=>!isHoloAdmin(x.code)).map(x=>x.num);
+        items += `<div style="display:flex;flex-wrap:wrap;align-items:center;gap:3px;width:100%;margin-bottom:3px;">
+          <span style="font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;color:#888;min-width:28px;">${sec.flag}</span>
+          ${normNums.map(n=>`<span style="font-family:'DM Mono',monospace;font-size:10px;padding:1px 5px;background:rgba(255,255,255,0.05);border-radius:3px;">${n}</span>`).join('')}
+          ${holoNums.map(n=>`<span style="font-family:'DM Mono',monospace;font-size:10px;padding:1px 5px;background:rgba(212,168,32,0.1);border:1px solid rgba(212,168,32,0.3);border-radius:3px;color:#d4a820;">✨${n}</span>`).join('')}
+        </div>`;
+      }
       const srcLabel = s.source === 'lista' ? 'LISTA' : s.source === 'venta' ? 'VENTA' : 'IA';
       const srcColor = s.source === 'lista' ? '#3080e8' : s.source === 'venta' ? '#a060f0' : '#555';
       const isPending = s.status === 'pendiente';
@@ -1999,6 +2010,26 @@ window.loadSalesHistory = async function() {
 // ═══════════════════════════════════════════════════════════════
 // ORDEN AL AZAR
 // ═══════════════════════════════════════════════════════════════
+
+// Shared helper — group codes in defined team order, numbers sorted
+function groupCodesOrdered(codes) {
+  const ORDERED = [
+    { code:'FWC', flag:'🏆', name:'Introducción / FWC' },
+    { code:'CC',  flag:'🥤', name:'Coca-Cola' },
+    ...ADMIN_TEAMS.map(t => ({ code:t.code, flag:t.flag, name:t.name }))
+  ];
+  const raw = {};
+  codes.forEach(c => {
+    const parts = c.split(' ');
+    const team  = parts[0] === '00' ? 'FWC' : parts[0];
+    const num   = parseInt(parts[1]);
+    if (!raw[team]) raw[team] = [];
+    raw[team].push({ num, code: c });
+  });
+  for (const k of Object.keys(raw)) raw[k].sort((a,b) => a.num - b.num);
+  return ORDERED.filter(s => raw[s.code]).map(s => ({ ...s, items: raw[s.code] }));
+}
+
 window._randomType   = 'all';
 window._randomResult = [];
 
@@ -2053,38 +2084,24 @@ window.generarOrdenAlAzar = function() {
   const selected = pool.slice(0, Math.min(qty, pool.length));
   window._randomResult = selected;
 
-  // Group by team
-  const groups = {};
-  for (const code of selected) {
-    const team = code.split(' ')[0];
-    if (!groups[team]) groups[team] = [];
-    groups[team].push(code);
-  }
-
   const total = selected.reduce((s,c) => s + (isHoloAdmin(c) ? 10 : 5), 0);
-  const holos = selected.filter(c => isHoloAdmin(c));
-  const norms = selected.filter(c => !isHoloAdmin(c));
-
   document.getElementById('rnd-count').textContent = selected.length;
   document.getElementById('rnd-total').textContent = '$' + total;
 
+  const ordered = groupCodesOrdered(selected);
   let html = '';
-  for (const [team, codes] of Object.entries(groups)) {
-    const teamDef  = ADMIN_TEAMS.find(t => t.code === team);
-    const teamName = teamDef ? `${teamDef.flag} ${teamDef.name}`
-                   : team === 'FWC' || team === '00' ? '🏆 FWC'
-                   : team === 'CC' ? '🥤 Coca-Cola' : team;
-    const holoItems = codes.filter(c => isHoloAdmin(c));
-    const normItems = codes.filter(c => !isHoloAdmin(c));
+  for (const sec of ordered) {
+    const holoItems = sec.items.filter(x => isHoloAdmin(x.code));
+    const normItems = sec.items.filter(x => !isHoloAdmin(x.code));
     html += `<div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
-      <div style="font-family:'Barlow Condensed',sans-serif;font-size:13px;font-weight:700;color:var(--text);margin-bottom:6px;">${teamName} <span style="color:#444;font-size:11px;">${codes.length} estampas</span></div>
+      <div style="font-family:'Barlow Condensed',sans-serif;font-size:13px;font-weight:700;color:var(--text);margin-bottom:6px;">${sec.flag} ${sec.name} <span style="color:#444;font-size:11px;">${sec.items.length} estampas</span></div>
       ${normItems.length ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px;">
         <span style="font-family:'DM Mono',monospace;font-size:9px;color:#555;align-self:center;margin-right:2px;">$5</span>
-        ${normItems.map(c=>`<span style="font-family:'DM Mono',monospace;font-size:11px;padding:2px 6px;background:rgba(255,255,255,0.05);border-radius:3px;">${c.split(' ')[1]}</span>`).join('')}
+        ${normItems.map(x=>`<span style="font-family:'DM Mono',monospace;font-size:11px;padding:2px 6px;background:rgba(255,255,255,0.05);border-radius:3px;">${x.num}</span>`).join('')}
       </div>` : ''}
       ${holoItems.length ? `<div style="display:flex;flex-wrap:wrap;gap:4px;">
         <span style="font-family:'DM Mono',monospace;font-size:9px;color:#a07010;align-self:center;margin-right:2px;">✨ $10</span>
-        ${holoItems.map(c=>`<span style="font-family:'DM Mono',monospace;font-size:11px;padding:2px 6px;background:rgba(212,168,32,0.1);border:1px solid rgba(212,168,32,0.3);border-radius:3px;color:#d4a820;">${c.split(' ')[1]}</span>`).join('')}
+        ${holoItems.map(x=>`<span style="font-family:'DM Mono',monospace;font-size:11px;padding:2px 6px;background:rgba(212,168,32,0.1);border:1px solid rgba(212,168,32,0.3);border-radius:3px;color:#d4a820;">${x.num}</span>`).join('')}
       </div>` : ''}
     </div>`;
   }
