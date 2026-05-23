@@ -2097,21 +2097,34 @@ window.copiarOrdenAlAzar = function() {
   const codes  = window._randomResult || [];
   if (codes.length === 0) return;
 
+  // Build ordered list following ADMIN_TEAMS order (same as visual)
+  const ORDERED_SECTIONS = [
+    { code: 'FWC', flag: '🏆', name: 'Introducción / FWC' },
+    { code: 'CC',  flag: '🥤', name: 'Coca-Cola' },
+    ...ADMIN_TEAMS.map(t => ({ code: t.code, flag: t.flag, name: t.name }))
+  ];
+
   const groups = {};
   codes.forEach(c => {
-    const team = c.split(' ')[0];
+    const team = c.split(' ')[0] === '00' ? 'FWC' : c.split(' ')[0];
     if (!groups[team]) groups[team] = [];
-    groups[team].push(c.split(' ')[1]);
+    groups[team].push(parseInt(c.split(' ')[1]));
   });
+
+  // Sort numbers within each team
+  for (const team of Object.keys(groups)) {
+    groups[team].sort((a,b) => a - b);
+  }
 
   const total = codes.reduce((s,c) => s + (isHoloAdmin(c)?10:5), 0);
   const lines = ['📦 NEXO — Estampas Panini Mundial 2026', ''];
-  for (const [team, nums] of Object.entries(groups)) {
-    const teamDef = ADMIN_TEAMS.find(t => t.code === team);
-    const flag    = teamDef?.flag || '';
-    const name    = teamDef?.name || team;
-    lines.push(`${flag} ${name}: ${nums.join(', ')}`);
+
+  // Iterate in defined order
+  for (const sec of ORDERED_SECTIONS) {
+    if (!groups[sec.code]) continue;
+    lines.push(`${sec.flag} ${sec.name}: ${groups[sec.code].join(', ')}`);
   }
+
   lines.push('');
   lines.push(`📦 Total: ${codes.length} estampas`);
   lines.push(`💰 Total: $${total}`);
