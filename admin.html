@@ -1895,6 +1895,40 @@ window.toggleSaleStatus = async function(saleId, newStatus) {
   } catch(e) { showStatus('❌ Error: ' + e.message); }
 };
 
+window.cancelarVenta = async function(saleId) {
+  // Primera confirmación
+  if (!confirm('¿Cancelar esta venta?\n\nEsto devolverá todas las estampas al inventario.')) return;
+
+  // Obtener datos de la venta
+  let saleData;
+  try {
+    const snap = await getDoc(doc(db, 'salesHistory', saleId));
+    if (!snap.exists()) { showStatus('❌ Venta no encontrada'); return; }
+    saleData = snap.data();
+  } catch(e) { showStatus('❌ Error: ' + e.message); return; }
+
+  const items    = saleData.items || [];
+  const total    = saleData.total || 0;
+  const client   = saleData.clientName ? ` de ${saleData.clientName}` : '';
+  const itemList = items.map(i => i.code).join(', ');
+
+  // Segunda confirmación con detalle
+  if (!confirm(`⚠️ SEGUNDA CONFIRMACIÓN\n\nSe devolverán al inventario:\n${itemList}\n\nTotal a revertir: $${total}${client}\n\n¿Estás seguro? Esta acción no se puede deshacer.`)) return;
+
+  // Devolver al stock
+  items.forEach(i => {
+    window._shopStock[i.code] = (window._shopStock[i.code] || 0) + 1;
+  });
+
+  try {
+    await setDoc(doc(db, 'shop', 'inventory'), { stock: window._shopStock }, { merge: false });
+    await deleteDoc(doc(db, 'salesHistory', saleId));
+    showStatus(`↩️ Venta cancelada — ${items.length} estampa(s) devueltas al stock`);
+    loadSalesHistory();
+    renderShopAdmin();
+  } catch(e) { showStatus('❌ Error: ' + e.message); }
+};
+
 window.loadSalesHistory = async function() {
   const panel = document.getElementById('sales-history-panel');
   if (!panel) return;
@@ -1947,6 +1981,12 @@ window.loadSalesHistory = async function() {
                 color:#555;cursor:pointer;">
               ${isPending ? '✓ Marcar surtida' : '↩ Marcar pendiente'}
             </button>
+            <button onclick="cancelarVenta('${s.id}')"
+              style="font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:1px;
+                padding:3px 10px;background:rgba(224,64,64,0.08);border:1px solid rgba(224,64,64,0.3);
+                border-radius:6px;color:var(--red);cursor:pointer;">
+              🗑 Cancelar
+            </button>
           </div>
         </div>
       </div>`;
@@ -1954,6 +1994,161 @@ window.loadSalesHistory = async function() {
   } catch(e) {
     panel.innerHTML = `<p style="color:var(--red);font-size:12px;padding:12px;">Error: ${e.message}</p>`;
   }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ORDEN AL AZAR
+// ═══════════════════════════════════════════════════════════════
+window._randomType   = 'all';
+window._randomResult = [];
+
+window.setRandomType = function(type) {
+  window._randomType = type;
+  ['all','normal','holo'].forEach(t => {
+    const btn = document.getElementById(`rnd-btn-${t}`);
+    if (!btn) return;
+    const active = t === type;
+    btn.style.background    = active ? 'rgba(160,96,240,0.2)' : 'transparent';
+    btn.style.borderColor   = active ? 'rgba(160,96,240,0.5)'  : 'var(--border)';
+    btn.style.color         = active ? 'var(--gold)'           : '#555';
+  });
+};
+
+window.generarOrdenAlAzar = function() {
+  const qty   = parseInt(document.getElementById('random-qty')?.value) || 100;
+  const type  = window._randomType;
+  const stock = window._shopStock;
+
+  // Build pool of available codes based on type
+  const allTeamCodes = [
+    '00 1',
+    ...Array.from({length:19}, (_,i) => `FWC ${i+1}`),
+    ...Array.from({length:14}, (_,i) => `CC ${i+1}`),
+    ...ADMIN_TEAMS.flatMap(t => Array.from({length:20}, (_,i) => `${t.code} ${i+1}`))
+  ];
+
+  let pool = allTeamCodes.filter(code => {
+    const inStock = (stock[code] || 0) > 0;
+    if (!inStock) return false;
+    if (type === 'normal') return !isHoloAdmin(code);
+    if (type === 'holo')   return isHoloAdmin(code);
+    return true;
+  });
+
+  if (pool.length === 0) {
+    showStatus('⚠️ No hay estampas en stock para ese tipo');
+    return;
+  }
+
+  if (qty > pool.length) {
+    showStatus(`⚠️ Solo hay ${pool.length} estampas disponibles de ese tipo`);
+    // Continue with all available
+  }
+
+  // Fisher-Yates shuffle and take first qty
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  const selected = pool.slice(0, Math.min(qty, pool.length));
+  window._randomResult = selected;
+
+  // Group by team
+  const groups = {};
+  for (const code of selected) {
+    const team = code.split(' ')[0];
+    if (!groups[team]) groups[team] = [];
+    groups[team].push(code);
+  }
+
+  const total = selected.reduce((s,c) => s + (isHoloAdmin(c) ? 10 : 5), 0);
+  const holos = selected.filter(c => isHoloAdmin(c));
+  const norms = selected.filter(c => !isHoloAdmin(c));
+
+  document.getElementById('rnd-count').textContent = selected.length;
+  document.getElementById('rnd-total').textContent = '$' + total;
+
+  let html = '';
+  for (const [team, codes] of Object.entries(groups)) {
+    const teamDef  = ADMIN_TEAMS.find(t => t.code === team);
+    const teamName = teamDef ? `${teamDef.flag} ${teamDef.name}`
+                   : team === 'FWC' || team === '00' ? '🏆 FWC'
+                   : team === 'CC' ? '🥤 Coca-Cola' : team;
+    const holoItems = codes.filter(c => isHoloAdmin(c));
+    const normItems = codes.filter(c => !isHoloAdmin(c));
+    html += `<div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
+      <div style="font-family:'Barlow Condensed',sans-serif;font-size:13px;font-weight:700;color:var(--text);margin-bottom:6px;">${teamName} <span style="color:#444;font-size:11px;">${codes.length} estampas</span></div>
+      ${normItems.length ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px;">
+        <span style="font-family:'DM Mono',monospace;font-size:9px;color:#555;align-self:center;margin-right:2px;">$5</span>
+        ${normItems.map(c=>`<span style="font-family:'DM Mono',monospace;font-size:11px;padding:2px 6px;background:rgba(255,255,255,0.05);border-radius:3px;">${c.split(' ')[1]}</span>`).join('')}
+      </div>` : ''}
+      ${holoItems.length ? `<div style="display:flex;flex-wrap:wrap;gap:4px;">
+        <span style="font-family:'DM Mono',monospace;font-size:9px;color:#a07010;align-self:center;margin-right:2px;">✨ $10</span>
+        ${holoItems.map(c=>`<span style="font-family:'DM Mono',monospace;font-size:11px;padding:2px 6px;background:rgba(212,168,32,0.1);border:1px solid rgba(212,168,32,0.3);border-radius:3px;color:#d4a820;">${c.split(' ')[1]}</span>`).join('')}
+      </div>` : ''}
+    </div>`;
+  }
+
+  document.getElementById('rnd-chips').innerHTML = html;
+  document.getElementById('random-preview').style.display = 'block';
+};
+
+window.copiarOrdenAlAzar = function() {
+  const codes  = window._randomResult || [];
+  if (codes.length === 0) return;
+
+  const groups = {};
+  codes.forEach(c => {
+    const team = c.split(' ')[0];
+    if (!groups[team]) groups[team] = [];
+    groups[team].push(c.split(' ')[1]);
+  });
+
+  const total = codes.reduce((s,c) => s + (isHoloAdmin(c)?10:5), 0);
+  const lines = ['📦 NEXO — Estampas Panini Mundial 2026', ''];
+  for (const [team, nums] of Object.entries(groups)) {
+    const teamDef = ADMIN_TEAMS.find(t => t.code === team);
+    const flag    = teamDef?.flag || '';
+    const name    = teamDef?.name || team;
+    lines.push(`${flag} ${name}: ${nums.join(', ')}`);
+  }
+  lines.push('');
+  lines.push(`📦 Total: ${codes.length} estampas`);
+  lines.push(`💰 Total: $${total}`);
+
+  navigator.clipboard.writeText(lines.join('\n'))
+    .then(() => showStatus('✅ Lista copiada'))
+    .catch(() => showStatus('📋 No se pudo copiar — usa el texto en pantalla'));
+};
+
+window.confirmarOrdenAlAzar = function() {
+  const codes = window._randomResult || [];
+  if (codes.length === 0) return;
+  const total  = codes.reduce((s,c) => s + (isHoloAdmin(c)?10:5), 0);
+  pedirDatosCliente(async ({ name, phone }) => {
+    // Descontar stock
+    codes.forEach(c => {
+      window._shopStock[c] = Math.max(0, (window._shopStock[c]||0) - 1);
+    });
+    try {
+      await setDoc(doc(db, 'shop', 'inventory'), { stock: window._shopStock }, { merge: false });
+      await addDoc(collection(db, 'salesHistory'), {
+        items: codes.map(c => ({ code: c, price: isHoloAdmin(c)?10:5 })),
+        total, ts: Date.now(),
+        date: new Date().toLocaleDateString('es-MX'),
+        source: 'azar',
+        clientName: name,
+        clientPhone: phone,
+        status: 'completada'
+      });
+      window._randomResult = [];
+      document.getElementById('random-preview').style.display = 'none';
+      document.getElementById('random-qty').value = '100';
+      showStatus(`✅ Orden confirmada — $${total}`);
+      renderShopAdmin();
+      mostrarRecibo(codes.map(c => ({ code: c })), total, name, phone);
+    } catch(e) { showStatus('❌ Error: ' + e.message); }
+  });
 };
 
 </script>
@@ -2388,6 +2583,73 @@ tbody td { padding:10px 14px; font-size:13px; }
     </div>
 
     <!-- HISTORIAL DE VENTAS -->
+    <!-- ORDEN AL AZAR -->
+    <div class="section-hdr" style="margin-top:40px;">🎲 Orden al Azar <span>SURTIR SIN REPETIR</span></div>
+    <div class="panel">
+      <div class="panel-title">Genera una selección aleatoria de tu inventario sin repetir</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px;">
+        <div>
+          <label style="font-family:'DM Mono',monospace;font-size:10px;color:#555;letter-spacing:2px;display:block;margin-bottom:6px;">CANTIDAD</label>
+          <input id="random-qty" type="number" value="100" min="1" max="994"
+            style="width:90px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;
+              padding:9px 12px;color:var(--text);font-family:'Bebas Neue',sans-serif;font-size:22px;
+              outline:none;text-align:center;">
+        </div>
+        <div>
+          <label style="font-family:'DM Mono',monospace;font-size:10px;color:#555;letter-spacing:2px;display:block;margin-bottom:6px;">TIPO</label>
+          <div style="display:flex;gap:6px;">
+            <button id="rnd-btn-all" onclick="setRandomType('all')"
+              style="font-family:'Barlow Condensed',sans-serif;font-size:12px;font-weight:700;letter-spacing:1px;
+                padding:9px 14px;border-radius:7px;cursor:pointer;border:1px solid rgba(160,96,240,0.5);
+                background:rgba(160,96,240,0.2);color:var(--gold);transition:all 0.15s;">
+              Todas
+            </button>
+            <button id="rnd-btn-normal" onclick="setRandomType('normal')"
+              style="font-family:'Barlow Condensed',sans-serif;font-size:12px;font-weight:700;letter-spacing:1px;
+                padding:9px 14px;border-radius:7px;cursor:pointer;border:1px solid var(--border);
+                background:transparent;color:#555;transition:all 0.15s;">
+              Solo normales
+            </button>
+            <button id="rnd-btn-holo" onclick="setRandomType('holo')"
+              style="font-family:'Barlow Condensed',sans-serif;font-size:12px;font-weight:700;letter-spacing:1px;
+                padding:9px 14px;border-radius:7px;cursor:pointer;border:1px solid var(--border);
+                background:transparent;color:#555;transition:all 0.15s;">
+              ✨ Solo holos
+            </button>
+          </div>
+        </div>
+        <button onclick="generarOrdenAlAzar()"
+          style="font-family:'Bebas Neue',sans-serif;font-size:16px;letter-spacing:2px;padding:11px 24px;
+            background:linear-gradient(135deg,var(--nexo2,#7030c0),var(--gold));color:white;
+            border:none;border-radius:8px;cursor:pointer;white-space:nowrap;">
+          🎲 Generar
+        </button>
+      </div>
+
+      <div id="random-preview" style="display:none;">
+        <!-- Stats -->
+        <div style="display:flex;gap:16px;flex-wrap:wrap;padding:12px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;margin-bottom:14px;align-items:center;">
+          <div><span style="font-family:'Bebas Neue',sans-serif;font-size:26px;color:var(--gold);" id="rnd-count">0</span><br><span style="font-family:'DM Mono',monospace;font-size:9px;color:#555;letter-spacing:1px;">ESTAMPAS</span></div>
+          <div><span style="font-family:'Bebas Neue',sans-serif;font-size:26px;color:var(--green);" id="rnd-total">$0</span><br><span style="font-family:'DM Mono',monospace;font-size:9px;color:#555;letter-spacing:1px;">TOTAL</span></div>
+          <div style="margin-left:auto;display:flex;gap:8px;">
+            <button onclick="copiarOrdenAlAzar()"
+              style="font-family:'Barlow Condensed',sans-serif;font-size:13px;font-weight:700;letter-spacing:1px;
+                padding:10px 16px;background:rgba(160,96,240,0.15);color:var(--gold);
+                border:1px solid rgba(160,96,240,0.4);border-radius:8px;cursor:pointer;">
+              📋 Copiar lista
+            </button>
+            <button onclick="confirmarOrdenAlAzar()"
+              style="font-family:'Bebas Neue',sans-serif;font-size:15px;letter-spacing:2px;padding:10px 20px;
+                background:linear-gradient(135deg,#a07010,#d4a820);color:#000;border:none;border-radius:8px;cursor:pointer;">
+              ✓ Confirmar y vender
+            </button>
+          </div>
+        </div>
+        <!-- Grouped result -->
+        <div id="rnd-chips" style="display:flex;flex-direction:column;gap:8px;"></div>
+      </div>
+    </div>
+
     <div class="section-hdr" style="margin-top:40px;">📋 Historial de Ventas <span>FIREBASE</span></div>
     <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap;">
       <button onclick="loadSalesHistory()" class="btn-refresh">↻ Cargar historial</button>
